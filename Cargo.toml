@@ -1,0 +1,11 @@
+[package]
+name = "platubot-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.45"
+dotenvy = "0.15.7"
+poise = "0.7.1"
+sqlx = { version = "0.9.1", features = ["runtime-tokio", "postgres", "tls-rustls", "chrono"] }
+tokio = { version = "1.54.1", features = ["full"] }

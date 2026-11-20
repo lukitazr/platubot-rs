@@ -29,6 +29,7 @@ async fn main() -> Result<(), Error> {
 
     let pool: sqlx::Pool<sqlx::Postgres> = database::connect().await?;
     println!("Conectado a PostgreSQL correctamente");
+    sqlx::migrate!().run(&pool).await?;
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -36,7 +37,8 @@ async fn main() -> Result<(), Error> {
                 commands::ping::ping(),
                 commands::ping::db_ping(),
                 commands::stress_test::stress_test(),
-                commands::users::user_info()
+                commands::users::user_info(),
+                commands::tournaments::torneo()
             ], 
             event_handler: |ctx, event| {
                  Box::pin(async move {

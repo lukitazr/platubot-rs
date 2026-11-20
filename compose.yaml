@@ -12,7 +12,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U discordbot -d discordbot"]
+      test: ["CMD-SHELL", "psql -U discordbot -d discordbot -c 'SELECT 1' >/dev/null"]
       interval: 5s
       timeout: 5s
       retries: 10

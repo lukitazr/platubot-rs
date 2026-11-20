@@ -1,6 +1,4 @@
 use sqlx::PgPool;
-use crate::database::models::guild_users::GuildUser;
-use crate::database::repositories::users::get_user;
 
 pub async fn create_guild_user(
     pool: &PgPool,

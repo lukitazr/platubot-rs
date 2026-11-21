@@ -17,6 +17,7 @@ pub struct Participant {
     pub pg: i64,
     pub pe: i64,
     pub pp: i64,
+    pub wo: i64,
     pub gf: i64,
     pub gc: i64,
 }

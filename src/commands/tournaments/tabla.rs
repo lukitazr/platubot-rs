@@ -67,13 +67,14 @@ fn format_standings(t: &Tournament, participants: &[Participant]) -> String {
             dg.to_string()
         };
         out.push_str(&format!(
-            "{}. <@{}> — {} pts | {}V {}E {}D | {}:{} (DG {dg_str})\n",
+            "{}. <@{}> — {} pts | {}V {}E {}D | {} WO | {}:{} (DG {dg_str})\n",
             i + 1,
             p.user_id,
             p.pg * 3 + p.pe,
             p.pg,
             p.pe,
             p.pp,
+            p.wo,
             p.gf,
             p.gc
         ));
@@ -102,6 +103,7 @@ mod tests {
                 pg: 2,
                 pe: 0,
                 pp: 0,
+                wo: 0,
                 gf: 5,
                 gc: 1,
             },
@@ -111,6 +113,7 @@ mod tests {
                 pg: 0,
                 pe: 0,
                 pp: 2,
+                wo: 1,
                 gf: 1,
                 gc: 5,
             },
@@ -120,6 +123,6 @@ mod tests {
         assert!(standings.contains("**Supercopa** (ID 10, amistoso) — finalizado"));
         assert!(standings.contains("Campeón: <@201>"));
         assert!(standings.contains("1. <@201> — 6 pts | 2V 0E 0D | 5:1 (DG +4)"));
-        assert!(standings.contains("2. <@202> — 0 pts | 0V 0E 2D | 1:5 (DG -4)"));
+        assert!(standings.contains("2. <@202> — 0 pts | 0V 0E 2D | 1 WO | 1:5 (DG -4)"));
     }
 }

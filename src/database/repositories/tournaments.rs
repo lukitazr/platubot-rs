@@ -232,6 +232,11 @@ pub async fn result(
             .bind(loser)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("UPDATE tournament_participants SET wo=wo+1 WHERE tournament_id=$1 AND user_id=$2")
+            .bind(id)
+            .bind(loser)
+            .execute(&mut *tx)
+            .await?;
     }
     sqlx::query(
         "UPDATE tournament_matches SET home_goals = $1, away_goals = $2 WHERE match_id = $3",
@@ -267,7 +272,7 @@ pub async fn result(
 }
 
 pub async fn participants(pool: &PgPool, id: i64) -> Result<Vec<Participant>, sqlx::Error> {
-    sqlx::query_as("SELECT p.user_id, u.username, p.pg, p.pe, p.pp, p.gf, p.gc FROM tournament_participants p JOIN users u ON u.id=p.user_id WHERE p.tournament_id=$1 ORDER BY (p.pg * 3 + p.pe) DESC, (p.gf - p.gc) DESC, p.gf DESC, p.user_id")
+    sqlx::query_as("SELECT p.user_id, u.username, p.pg, p.pe, p.pp, p.wo, p.gf, p.gc FROM tournament_participants p JOIN users u ON u.id=p.user_id WHERE p.tournament_id=$1 ORDER BY (p.pg * 3 + p.pe) DESC, (p.gf - p.gc) DESC, p.gf DESC, p.user_id")
         .bind(id).fetch_all(pool).await
 }
 

@@ -12,3 +12,9 @@ poise = "0.7.1"
 rand = "0.8"
 sqlx = { version = "0.9.1", features = ["runtime-tokio", "postgres", "tls-rustls", "chrono", "migrate", "macros"] }
 tokio = { version = "1.54.1", features = ["full"] }
+
+ab_glyph = "0.2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+imageproc = { version = "0.27", default-features = false, features = ["text"] }
+unicode-segmentation = "1.12"
+unicode-normalization = "0.1"

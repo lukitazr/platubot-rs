@@ -1,6 +1,8 @@
+mod capturas;
 mod crear;
 mod finalizar;
 mod fixture;
+mod graphics;
 mod inscribir;
 mod programar;
 mod resultado;
@@ -13,6 +15,7 @@ mod wo;
 
 use crate::database::repositories::tournaments as repo;
 
+use self::capturas::capturas;
 use self::crear::crear;
 use self::finalizar::finalizar;
 use self::fixture::fixture;

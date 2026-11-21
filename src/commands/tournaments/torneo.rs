@@ -1,4 +1,6 @@
-use super::{crear, finalizar, fixture, inscribir, programar, resultado, sortear, tabla, ver, wo};
+use super::{
+    capturas, crear, finalizar, fixture, inscribir, programar, resultado, sortear, tabla, ver, wo,
+};
 use crate::{Context, Error};
 use bot_command_macros::bot_command;
 
@@ -8,6 +10,7 @@ use bot_command_macros::bot_command;
     guild_only,
     subcommands(
         "crear",
+        "capturas",
         "inscribir",
         "programar",
         "sortear",

@@ -31,12 +31,13 @@ pub async fn ver(
     out.push_str("\n**Clasificación** (3 puntos por victoria, 1 por empate)\n");
     for p in participants {
         out.push_str(&format!(
-            "<@{}> — {} pts | {}V {}E {}D | {}:{}\n",
+            "<@{}> — {} pts | {}V {}E {}D | {} WO | {}:{}\n",
             p.user_id,
             p.pg * 3 + p.pe,
             p.pg,
             p.pe,
             p.pp,
+            p.wo,
             p.gf,
             p.gc
         ));

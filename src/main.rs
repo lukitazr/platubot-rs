@@ -34,6 +34,11 @@ async fn main() -> Result<(), Error> {
     let pool: sqlx::Pool<sqlx::Postgres> = database::connect().await?;
     println!("Conectado a PostgreSQL correctamente");
     sqlx::migrate!().run(&pool).await?;
+    sqlx::query(
+        "UPDATE match_submissions SET status='choosing', match_id=NULL WHERE status='sending'",
+    )
+    .execute(&pool)
+    .await?;
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -44,8 +49,38 @@ async fn main() -> Result<(), Error> {
                         let data = ctx.user_data().await;
 
                         events::message::message_event(new_message, &data.pool).await;
+                        if let Err(e) = events::submissions::message(
+                            ctx.serenity_context,
+                            new_message,
+                            &data.pool,
+                        )
+                        .await
+                        {
+                            eprintln!("Error al procesar capturas: {e}");
+                        }
                     }
 
+                    if let serenity::FullEvent::InteractionCreate { interaction } = event {
+                        let data = ctx.user_data().await;
+                        if let Err(e) = events::results::interaction(
+                            ctx.serenity_context,
+                            interaction,
+                            &data.pool,
+                        )
+                        .await
+                        {
+                            eprintln!("Error en formulario de resultado: {e}");
+                        }
+                        if let Err(e) = events::submissions::interaction(
+                            ctx.serenity_context,
+                            interaction,
+                            &data.pool,
+                        )
+                        .await
+                        {
+                            eprintln!("Error en interaccion de capturas: {e}");
+                        }
+                    }
                     Ok(())
                 })
             },

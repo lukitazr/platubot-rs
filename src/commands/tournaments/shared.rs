@@ -140,3 +140,48 @@ pub(super) fn describir_resultado(outcome: repo::MatchResult, wo: bool) -> Strin
         repo::MatchResult::Closest { fecha, home, away, played } => format!("No hay un partido entre estos participantes en la fecha indicada. La coincidencia más cercana es la fecha {fecha}: <@{home}> (local) contra <@{away}> (visitante){}.", if played { ", con resultado ya registrado" } else { "" }),
     }
 }
+
+pub(super) async fn descargar_avatares(
+    ctx: Context<'_>,
+    ids: &[i64],
+) -> std::collections::HashMap<i64, Vec<u8>> {
+    let mut avatars = std::collections::HashMap::new();
+    for batch in ids.chunks(8) {
+        let mut downloads = tokio::task::JoinSet::new();
+        for &id in batch {
+            let http = ctx.serenity_context().http.clone();
+            downloads.spawn(async move {
+                let png =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), avatar_png(&http, id))
+                        .await
+                        .ok()
+                        .flatten();
+                (id, png)
+            });
+        }
+        while let Some(result) = downloads.join_next().await {
+            if let Ok((id, Some(png))) = result {
+                avatars.insert(id, png);
+            }
+        }
+    }
+    avatars
+}
+
+async fn avatar_png(http: &serenity::Http, id: i64) -> Option<Vec<u8>> {
+    let user = serenity::UserId::new(u64::try_from(id).ok()?)
+        .to_user(http)
+        .await
+        .ok()?;
+    let url = match user.avatar {
+        Some(hash) => format!(
+            "https://cdn.discordapp.com/avatars/{}/{hash}.png?size=64",
+            user.id
+        ),
+        None => user.default_avatar_url(),
+    };
+    serenity::CreateAttachment::url(http, &url)
+        .await
+        .ok()
+        .map(|file| file.data)
+}

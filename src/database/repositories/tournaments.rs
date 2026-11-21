@@ -194,10 +194,89 @@ pub async fn result(
     goals2: i64,
     walkover: Option<i64>,
 ) -> Result<MatchResult, sqlx::Error> {
+    result_inner(
+        pool, guild, id, fecha, player1, player2, goals1, goals2, walkover, None, None,
+    )
+    .await
+}
+
+pub async fn result_submission(
+    pool: &PgPool,
+    guild: i64,
+    id: i64,
+    fecha: i32,
+    home: i64,
+    away: i64,
+    goals1: i64,
+    goals2: i64,
+    submission: i64,
+) -> Result<MatchResult, sqlx::Error> {
+    result_inner(
+        pool,
+        guild,
+        id,
+        fecha,
+        home,
+        away,
+        goals1,
+        goals2,
+        None,
+        Some(submission),
+        None,
+    )
+    .await
+}
+
+pub async fn result_match(
+    pool: &PgPool,
+    guild: i64,
+    tournament: i64,
+    match_id: i64,
+    fecha: i32,
+    home: i64,
+    away: i64,
+    home_goals: i64,
+    away_goals: i64,
+) -> Result<MatchResult, sqlx::Error> {
+    result_inner(
+        pool,
+        guild,
+        tournament,
+        fecha,
+        home,
+        away,
+        home_goals,
+        away_goals,
+        None,
+        None,
+        Some(match_id),
+    )
+    .await
+}
+
+async fn result_inner(
+    pool: &PgPool,
+    guild: i64,
+    id: i64,
+    fecha: i32,
+    player1: i64,
+    player2: i64,
+    goals1: i64,
+    goals2: i64,
+    walkover: Option<i64>,
+    submission: Option<i64>,
+    selected_match: Option<i64>,
+) -> Result<MatchResult, sqlx::Error> {
     let mut tx = pool.begin().await?;
     lock_open(&mut tx, guild, id).await?;
-    let games: Vec<(i64, i64, i64, Option<i64>)> = sqlx::query_as("SELECT match_id, home_id, away_id, home_goals FROM tournament_matches WHERE tournament_id = $1 AND fecha = $2 AND ((home_id = $3 AND away_id = $4) OR (home_id = $4 AND away_id = $3)) ORDER BY match_id LIMIT 2")
-        .bind(id).bind(fecha).bind(player1).bind(player2).fetch_all(&mut *tx).await?;
+    if let Some(submission) = submission {
+        let updated = sqlx::query("UPDATE match_submissions SET status='approved' WHERE submission_id=$1 AND tournament_id=$2 AND status='pending'").bind(submission).bind(id).execute(&mut *tx).await?;
+        if updated.rows_affected() == 0 {
+            return Ok(MatchResult::AlreadyPlayed);
+        }
+    }
+    let games: Vec<(i64, i64, i64, Option<i64>)> = sqlx::query_as("SELECT match_id, home_id, away_id, home_goals FROM tournament_matches WHERE tournament_id = $1 AND fecha = $2 AND ((home_id = $3 AND away_id = $4) OR (home_id = $4 AND away_id = $3)) AND ($5::bigint IS NULL OR match_id = (SELECT match_id FROM match_submissions WHERE submission_id=$5)) AND ($6::bigint IS NULL OR match_id=$6) ORDER BY match_id LIMIT 2")
+        .bind(id).bind(fecha).bind(player1).bind(player2).bind(submission).bind(selected_match).fetch_all(&mut *tx).await?;
     if games.len() > 1 {
         return Ok(MatchResult::Ambiguous);
     }
@@ -232,9 +311,16 @@ pub async fn result(
             .bind(loser)
             .execute(&mut *tx)
             .await?;
+        sqlx::query(
+            "UPDATE tournament_participants SET wo=wo+1 WHERE tournament_id=$1 AND user_id=$2",
+        )
+        .bind(id)
+        .bind(loser)
+        .execute(&mut *tx)
+        .await?;
     }
     sqlx::query(
-        "UPDATE tournament_matches SET home_goals = $1, away_goals = $2 WHERE match_id = $3",
+        "UPDATE tournament_matches SET home_goals = $1, away_goals = $2, played_at = NOW() WHERE match_id = $3",
     )
     .bind(home_goals)
     .bind(away_goals)
@@ -267,13 +353,24 @@ pub async fn result(
 }
 
 pub async fn participants(pool: &PgPool, id: i64) -> Result<Vec<Participant>, sqlx::Error> {
-    sqlx::query_as("SELECT p.user_id, u.username, p.pg, p.pe, p.pp, p.gf, p.gc FROM tournament_participants p JOIN users u ON u.id=p.user_id WHERE p.tournament_id=$1 ORDER BY (p.pg * 3 + p.pe) DESC, (p.gf - p.gc) DESC, p.gf DESC, p.user_id")
+    sqlx::query_as("SELECT p.user_id, u.username, p.pg, p.pe, p.pp, p.wo, p.gf, p.gc FROM tournament_participants p JOIN users u ON u.id=p.user_id WHERE p.tournament_id=$1 ORDER BY (p.pg * 3 + p.pe) DESC, (p.gf - p.gc) DESC, p.gf DESC, p.wo, p.user_id")
         .bind(id).fetch_all(pool).await
 }
 
 pub async fn matches(pool: &PgPool, id: i64) -> Result<Vec<Match>, sqlx::Error> {
-    sqlx::query_as("SELECT match_id, fecha, home_id, away_id, home_goals, away_goals FROM tournament_matches WHERE tournament_id=$1 ORDER BY fecha, match_id")
+    sqlx::query_as("SELECT fecha, home_id, away_id, home_goals, away_goals FROM tournament_matches WHERE tournament_id=$1 ORDER BY fecha, match_id")
         .bind(id).fetch_all(pool).await
+}
+
+pub async fn newest_user_matches(
+    pool: &PgPool,
+    id: i64,
+    user: i64,
+) -> Result<Vec<Match>, sqlx::Error> {
+    sqlx::query_as("
+    SELECT fecha, home_id, away_id, home_goals, away_goals FROM tournament_matches 
+    WHERE tournament_id=$1 AND (home_id=$2 OR away_id=$2) AND played_at IS NOT NULL ORDER BY played_at DESC, fecha DESC, match_id DESC LIMIT 5")
+        .bind(id).bind(user).fetch_all(pool).await
 }
 
 pub async fn finish(
@@ -304,6 +401,69 @@ pub async fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn selected_match_is_recorded_once_even_with_duplicate_fixtures(
+        pool: PgPool,
+    ) -> Result<(), sqlx::Error> {
+        let tournament = create(&pool, 1, "Resultados", false).await?;
+        for player in 1..=2_i64 {
+            join(&pool, 1, tournament, player, &format!("jugador{player}")).await?;
+        }
+        let first: i64 = sqlx::query_scalar("INSERT INTO tournament_matches (tournament_id,fecha,home_id,away_id) VALUES ($1,1,1,2) RETURNING match_id").bind(tournament).fetch_one(&pool).await?;
+        let second: i64 = sqlx::query_scalar("INSERT INTO tournament_matches (tournament_id,fecha,home_id,away_id) VALUES ($1,1,1,2) RETURNING match_id").bind(tournament).fetch_one(&pool).await?;
+        assert!(matches!(
+            result_match(&pool, 1, tournament, second, 1, 1, 2, 3, 1).await?,
+            MatchResult::Saved
+        ));
+        assert!(matches!(
+            result_match(&pool, 1, tournament, second, 1, 1, 2, 3, 1).await?,
+            MatchResult::AlreadyPlayed
+        ));
+        let unplayed: Option<i64> =
+            sqlx::query_scalar("SELECT home_goals FROM tournament_matches WHERE match_id=$1")
+                .bind(first)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(unplayed, None);
+        let (wins, goals): (i64, i64) = sqlx::query_as(
+            "SELECT pg,gf FROM tournament_participants WHERE tournament_id=$1 AND user_id=1",
+        )
+        .bind(tournament)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!((wins, goals), (1, 3));
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn participants_use_walkovers_to_break_complete_ties(
+        pool: PgPool,
+    ) -> Result<(), sqlx::Error> {
+        let tournament = create(&pool, 1, "Desempate por WO", false).await?;
+        for (user_id, walkovers) in [(1_i64, 2_i64), (2, 0), (3, 1), (4, 0)] {
+            sqlx::query("INSERT INTO users (id, username) VALUES ($1, $2)")
+                .bind(user_id)
+                .bind(format!("user{user_id}"))
+                .execute(&pool)
+                .await?;
+            sqlx::query("INSERT INTO tournament_participants (tournament_id, user_id, pg, pe, pp, gf, gc, wo) VALUES ($1, $2, 1, 0, 0, 3, 1, $3)")
+                .bind(tournament)
+                .bind(user_id)
+                .bind(walkovers)
+                .execute(&pool)
+                .await?;
+        }
+
+        let participants = participants(&pool, tournament).await?;
+        let ordered_ids: Vec<_> = participants
+            .iter()
+            .map(|participant| participant.user_id)
+            .collect();
+
+        assert_eq!(ordered_ids, vec![2, 4, 3, 1]);
+        Ok(())
+    }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn results_are_identified_by_tournament_date_and_players(
@@ -356,6 +516,20 @@ mod tests {
         ));
         let score: (Option<i64>, Option<i64>) = sqlx::query_as("SELECT home_goals, away_goals FROM tournament_matches WHERE tournament_id=$1 AND fecha=2").bind(t1).fetch_one(&pool).await?;
         assert_eq!(score, (Some(1), Some(4)));
+        let played_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+            "SELECT played_at FROM tournament_matches WHERE tournament_id=$1 AND fecha=2",
+        )
+        .bind(t1)
+        .fetch_one(&pool)
+        .await?;
+        assert!(played_at.is_some());
+        let unplayed_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+            "SELECT played_at FROM tournament_matches WHERE tournament_id=$1 AND fecha=6",
+        )
+        .bind(t1)
+        .fetch_one(&pool)
+        .await?;
+        assert!(unplayed_at.is_none());
         assert!(matches!(
             result(&pool, 1, t2, 2, 2, 1, 3, 0, Some(2)).await?,
             MatchResult::InvalidWalkover
@@ -368,6 +542,28 @@ mod tests {
             .fetch_one(&pool)
             .await?;
         assert_eq!(wo, 1);
+        let tournament_wo: i64 = sqlx::query_scalar(
+            "SELECT wo FROM tournament_participants WHERE tournament_id=$1 AND user_id=1",
+        )
+        .bind(t2)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(tournament_wo, 1);
+        assert_eq!(wo, tournament_wo);
+        let walkover_played_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+            "SELECT played_at FROM tournament_matches WHERE tournament_id=$1 AND fecha=2",
+        )
+        .bind(t2)
+        .fetch_one(&pool)
+        .await?;
+        assert!(walkover_played_at.is_some());
+        let t1_wo: i64 = sqlx::query_scalar(
+            "SELECT wo FROM tournament_participants WHERE tournament_id=$1 AND user_id=1",
+        )
+        .bind(t1)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(t1_wo, 0);
         Ok(())
     }
 }

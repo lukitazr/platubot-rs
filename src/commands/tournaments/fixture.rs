@@ -1,9 +1,24 @@
+mod imagen;
+
 use super::repo;
-use super::shared::{autocomplete_torneo, guild, resolver_torneo};
+use super::shared::{autocomplete_torneo, descargar_avatares, guild, resolver_torneo, uid};
 use crate::database::models::tournaments::{Match, Tournament};
 use crate::{Context, Error, serenity};
 use bot_command_macros::bot_command;
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::Arc,
+    time::Duration,
+};
+use tokio::time::Instant;
+
+struct Fixture {
+    tournament: Tournament,
+    dates: Vec<(i32, Vec<Match>)>,
+    names: HashMap<i64, String>,
+    avatars: HashMap<i64, Vec<u8>>,
+    player: Option<i64>,
+}
 
 /// Muestra los enfrentamientos de un torneo, organizados por fecha.
 #[bot_command(slash_command, guild_only)]
@@ -12,13 +27,15 @@ pub async fn fixture(
     #[autocomplete = "autocomplete_torneo"]
     #[description = "Nombre o ID del torneo"]
     torneo: String,
-    #[description = "Fecha inicial a consultar (opcional)"] fecha: Option<i32>,
+    #[description = "Fecha inicial del fixture general"] fecha: Option<i32>,
+    #[description = "Mostrar solo los partidos de este jugador"] jugador: Option<serenity::User>,
 ) -> Result<(), Error> {
+    ctx.defer().await?;
     let Some(torneo) = resolver_torneo(ctx, &torneo).await? else {
         return Ok(());
     };
     let pool = &ctx.data().pool;
-    let Some(t) = repo::get(pool, guild(ctx)?, torneo).await? else {
+    let Some(tournament) = repo::get(pool, guild(ctx)?, torneo).await? else {
         ctx.say("Torneo no encontrado.").await?;
         return Ok(());
     };
@@ -28,190 +45,175 @@ pub async fn fixture(
             .await?;
         return Ok(());
     }
-
-    let mut fechas_map = BTreeMap::<i32, Vec<Match>>::new();
-    for m in matches {
-        fechas_map.entry(m.fecha).or_default().push(m);
-    }
-    let fechas: Vec<(i32, Vec<Match>)> = fechas_map.into_iter().collect();
-    let total_pages = fechas.len();
-
-    let mut current_page = 0;
-    if let Some(target_fecha) = fecha {
-        if let Some(pos) = fechas.iter().position(|(f, _)| *f == target_fecha) {
-            current_page = pos;
-        } else {
-            let available_msg = if total_pages == 1 {
-                format!("la única fecha es la {}", fechas[0].0)
-            } else {
-                format!(
-                    "fechas disponibles de la {} a la {}",
-                    fechas.first().unwrap().0,
-                    fechas.last().unwrap().0
-                )
-            };
-            ctx.say(format!(
-                "La fecha {target_fecha} no existe en este torneo ({available_msg})."
-            ))
+    let player = jugador.as_ref().map(uid).transpose()?;
+    let dates = fechas(matches, player);
+    if dates.is_empty() {
+        ctx.say("El jugador no tiene enfrentamientos programados en este torneo.")
             .await?;
-            return Ok(());
-        }
+        return Ok(());
     }
-
-    if total_pages == 1 {
-        let content = format_fixture_page(&t, fechas[0].0, 0, 1, &fechas[0].1);
-        ctx.say(content).await?;
+    let mut current = match fecha.filter(|_| player.is_none()) {
+        Some(date) => match dates.binary_search_by_key(&date, |(f, _)| *f) {
+            Ok(index) => index,
+            Err(_) => {
+                ctx.say(format!(
+                    "No hay partidos programados en la fecha {date} de este torneo."
+                ))
+                .await?;
+                return Ok(());
+            }
+        },
+        None if player.is_none() => dates
+            .iter()
+            .position(|(_, games)| {
+                games
+                    .iter()
+                    .any(|game| game.home_goals.zip(game.away_goals).is_none())
+            })
+            .unwrap_or(0),
+        None => 0,
+    };
+    let ids: Vec<_> = dates
+        .iter()
+        .flat_map(|(_, matches)| matches)
+        .flat_map(|game| [game.home_id, game.away_id])
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut names: HashMap<_, _> = repo::participants(pool, torneo)
+        .await?
+        .into_iter()
+        .map(|p| (p.user_id, p.username))
+        .collect();
+    if let (Some(id), Some(user)) = (player, jugador) {
+        names.entry(id).or_insert(user.name);
+    }
+    let avatars = descargar_avatares(ctx, &ids).await;
+    let total = dates.len();
+    let fixture = Arc::new(Fixture {
+        tournament,
+        dates,
+        names,
+        avatars,
+        player,
+    });
+    if let Some(player) = player {
+        let png =
+            tokio::task::spawn_blocking(move || imagen::render_player(&fixture, player)).await??;
+        let image = serenity::CreateAttachment::bytes(
+            png,
+            format!("fixture-{torneo}-jugador-{player}.png"),
+        )
+        .description("Todas las fechas del jugador, en orden cronológico por columna.");
+        ctx.send(poise::CreateReply::default().attachment(image))
+            .await?;
+        return Ok(());
+    }
+    let image = attachment(&fixture, current).await?;
+    if total == 1 {
+        ctx.send(poise::CreateReply::default().attachment(image))
+            .await?;
         return Ok(());
     }
 
-    let ctx_id = ctx.id();
-    let prev_button_id = format!("{ctx_id}_prev");
-    let next_button_id = format!("{ctx_id}_next");
-
-    let make_buttons = |page: usize, disabled: bool| {
-        let indicator_id = format!("{ctx_id}_ind");
-        serenity::CreateActionRow::Buttons(vec![
-            serenity::CreateButton::new(&prev_button_id)
+    let prefix = ctx.id();
+    let prev = format!("{prefix}_fixture_prev");
+    let next = format!("{prefix}_fixture_next");
+    let buttons = |page: usize, disabled: bool| {
+        vec![serenity::CreateActionRow::Buttons(vec![
+            serenity::CreateButton::new(&prev)
                 .emoji('◀')
                 .label("Anterior")
                 .disabled(disabled),
-            serenity::CreateButton::new(indicator_id)
-                .label(format!("{}/{}", page + 1, total_pages))
-                .style(serenity::ButtonStyle::Secondary)
+            serenity::CreateButton::new(format!("{prefix}_fixture_page"))
+                .label(format!("{}/{total}", page + 1))
                 .disabled(true),
-            serenity::CreateButton::new(&next_button_id)
+            serenity::CreateButton::new(&next)
                 .emoji('▶')
                 .label("Siguiente")
                 .disabled(disabled),
-        ])
+        ])]
     };
-
-    let reply = poise::CreateReply::default()
-        .content(format_fixture_page(
-            &t,
-            fechas[current_page].0,
-            current_page,
-            total_pages,
-            &fechas[current_page].1,
-        ))
-        .components(vec![make_buttons(current_page, false)]);
-
-    let reply_handle = ctx.send(reply).await?;
-
-    while let Some(press) = serenity::collector::ComponentInteractionCollector::new(ctx)
-        .filter(move |press| press.data.custom_id.starts_with(&ctx_id.to_string()))
-        .timeout(Duration::from_secs(600))
-        .await
-    {
-        if press.data.custom_id == next_button_id {
-            current_page = (current_page + 1) % total_pages;
-        } else if press.data.custom_id == prev_button_id {
-            current_page = current_page.checked_sub(1).unwrap_or(total_pages - 1);
+    let reply = ctx
+        .send(
+            poise::CreateReply::default()
+                .attachment(image)
+                .components(buttons(current, false)),
+        )
+        .await?;
+    let deadline = Instant::now() + Duration::from_secs(600);
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        let prev_id = prev.clone();
+        let next_id = next.clone();
+        let Some(press) = serenity::collector::ComponentInteractionCollector::new(ctx)
+            .filter(move |press| press.data.custom_id == prev_id || press.data.custom_id == next_id)
+            .timeout(remaining)
+            .await
+        else {
+            break;
+        };
+        press.defer(ctx.serenity_context()).await?;
+        let page = if press.data.custom_id == next {
+            (current + 1) % total
         } else {
-            continue;
-        }
-
-        let page_content = format_fixture_page(
-            &t,
-            fechas[current_page].0,
-            current_page,
-            total_pages,
-            &fechas[current_page].1,
-        );
-        let buttons = make_buttons(current_page, false);
-
+            current.checked_sub(1).unwrap_or(total - 1)
+        };
+        let image = attachment(&fixture, page).await?;
         press
-            .create_response(
+            .edit_response(
                 ctx.serenity_context(),
-                serenity::CreateInteractionResponse::UpdateMessage(
-                    serenity::CreateInteractionResponseMessage::new()
-                        .content(page_content)
-                        .components(vec![buttons]),
-                ),
+                serenity::EditInteractionResponse::new()
+                    .attachments(serenity::EditAttachments::new().add(image))
+                    .components(buttons(page, false)),
             )
             .await?;
+        current = page;
     }
-
-    let disabled_buttons = make_buttons(current_page, true);
-    let last_content = format_fixture_page(
-        &t,
-        fechas[current_page].0,
-        current_page,
-        total_pages,
-        &fechas[current_page].1,
-    );
-    let _ = reply_handle
+    let _ = reply
         .edit(
             ctx,
-            poise::CreateReply::default()
-                .content(last_content)
-                .components(vec![disabled_buttons]),
+            poise::CreateReply::default().components(buttons(current, true)),
         )
         .await;
-
     Ok(())
 }
 
-fn format_fixture_page(
-    t: &Tournament,
-    fecha: i32,
-    page_idx: usize,
-    total_pages: usize,
-    matches: &[Match],
-) -> String {
-    let mut out = format!(
-        "**{}** (ID {}, {}) — **Fecha {}** ({}/{})\n\n",
-        t.name,
-        t.tournament_id,
-        if t.oficial { "oficial" } else { "amistoso" },
-        fecha,
-        page_idx + 1,
-        total_pages
-    );
-    for m in matches {
-        let score = match (m.home_goals, m.away_goals) {
-            (Some(h), Some(a)) => format!("{h} - {a}"),
-            _ => "? - ?".to_string(),
-        };
-        out.push_str(&format!("<@{}> {} <@{}>\n", m.home_id, score, m.away_id));
+fn fechas(matches: Vec<Match>, player: Option<i64>) -> Vec<(i32, Vec<Match>)> {
+    let mut dates = BTreeMap::<i32, Vec<Match>>::new();
+    for game in matches {
+        if player.is_none_or(|id| id == game.home_id || id == game.away_id) {
+            dates.entry(game.fecha).or_default().push(game);
+        }
     }
-    out
+    dates.into_iter().collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_format_fixture_page() {
-        let t = Tournament {
-            tournament_id: 42,
-            guild_id: 1,
-            name: "Torneo Apertura".into(),
-            oficial: true,
-            finished: false,
-            champion_id: None,
-        };
-        let matches = vec![
-            Match {
-                fecha: 1,
-                home_id: 101,
-                away_id: 102,
-                home_goals: Some(2),
-                away_goals: Some(1),
-            },
-            Match {
-                fecha: 1,
-                home_id: 103,
-                away_id: 104,
-                home_goals: None,
-                away_goals: None,
-            },
-        ];
-
-        let page = format_fixture_page(&t, 1, 0, 3, &matches);
-        assert!(page.contains("**Torneo Apertura** (ID 42, oficial) — **Fecha 1** (1/3)"));
-        assert!(page.contains("<@101> 2 - 1 <@102>"));
-        assert!(page.contains("<@103> ? - ? <@104>"));
-    }
+async fn attachment(
+    fixture: &Arc<Fixture>,
+    page: usize,
+) -> Result<serenity::CreateAttachment, Error> {
+    let fixture = Arc::clone(fixture);
+    tokio::task::spawn_blocking(move || {
+        let date = fixture.dates[page].0;
+        let png = imagen::render(&fixture, page)?;
+        Ok(serenity::CreateAttachment::bytes(
+            png,
+            format!(
+                "fixture-{}-fecha-{date}.png",
+                fixture.tournament.tournament_id
+            ),
+        )
+        .description(format!(
+            "Fixture de {}. Fecha {date}. Página {} de {}.",
+            fixture
+                .tournament
+                .name
+                .chars()
+                .take(200)
+                .collect::<String>(),
+            page + 1,
+            fixture.dates.len()
+        )))
+    })
+    .await?
 }

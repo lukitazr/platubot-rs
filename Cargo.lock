@@ -1238,6 +1238,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "poise",
+ "rand 0.8.8",
  "sqlx",
  "tokio",
 ]

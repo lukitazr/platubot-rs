@@ -8,7 +8,7 @@ pub async fn create_guild_user(
     sqlx::query(
         "INSERT INTO guild_users (guild_id, user_id)
          VALUES ($1, $2)
-         ON CONFLICT (guild_id, user_id) DO NOTHING"
+         ON CONFLICT (guild_id, user_id) DO NOTHING",
     )
     .bind(guild_id)
     .bind(user_id)

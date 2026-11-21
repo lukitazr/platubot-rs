@@ -23,7 +23,6 @@ pub struct Participant {
 
 #[derive(Debug, FromRow)]
 pub struct Match {
-    pub match_id: i64,
     pub fecha: i32,
     pub home_id: i64,
     pub away_id: i64,

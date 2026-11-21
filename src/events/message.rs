@@ -1,13 +1,10 @@
 use poise::serenity_prelude::Message;
 use sqlx::PgPool;
 
-use crate::database::repositories::users::create_users;
 use crate::database::repositories::guild_users::create_guild_user;
+use crate::database::repositories::users::create_users;
 
-pub async fn message_event(
-    new_message: &Message,
-    pool: &PgPool,
-) {
+pub async fn message_event(new_message: &Message, pool: &PgPool) {
     if new_message.author.bot {
         return;
     }
@@ -45,8 +42,5 @@ pub async fn message_event(
         return;
     }
 
-    println!(
-        "Registro procesado: {} en servidor {}",
-        username, guild_id
-    );
+    println!("Registro procesado: {} en servidor {}", username, guild_id);
 }

@@ -12,10 +12,7 @@ pub async fn stress_test(ctx: Context<'_>) -> Result<(), Error> {
         let counter = Arc::clone(&counter);
 
         handles.push(tokio::spawn(async move {
-            counter.fetch_add(
-                1,
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }));
     }
 

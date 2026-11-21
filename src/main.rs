@@ -37,15 +37,7 @@ async fn main() -> Result<(), Error> {
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![
-                commands::ping::ping(),
-                commands::ping::db_ping(),
-                commands::stress_test::stress_test(),
-                commands::users::user_info(),
-                commands::tournaments::torneo(),
-                commands::tournaments::fixture(),
-                commands::tournaments::tabla(),
-            ],
+            commands: commands::all(),
             event_handler: |ctx, event| {
                 Box::pin(async move {
                     if let serenity::FullEvent::Message { new_message } = event {

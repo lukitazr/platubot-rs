@@ -1,7 +1,9 @@
 use crate::database::repositories::users::get_user;
 use crate::{Context, Error, serenity};
+use bot_command_macros::bot_command;
 
-#[poise::command(slash_command)]
+/// Muestra las estadísticas registradas de un usuario.
+#[bot_command(slash_command)]
 pub async fn user_info(ctx: Context<'_>, user: serenity::User) -> Result<(), Error> {
     match get_user(&ctx.data().pool, i64::try_from(user.id.get())?).await? {
         Some(u) => {

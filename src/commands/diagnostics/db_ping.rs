@@ -1,20 +1,8 @@
-use crate::Context;
-use crate::Error;
-use crate::Ordering;
+use crate::{Context, Error};
+use bot_command_macros::bot_command;
 
-#[poise::command(slash_command)]
-pub async fn ping(ctx: Context<'_>) -> Result<(), Error> {
-    ctx.data().contador.fetch_add(1, Ordering::Relaxed);
-    ctx.say(format!(
-        "Pong! {}",
-        ctx.data().contador.load(Ordering::Relaxed)
-    ))
-    .await?;
-
-    Ok(())
-}
-
-#[poise::command(slash_command, owners_only)]
+/// Comprueba la conexión con la base de datos. Solo para propietarios del bot.
+#[bot_command(slash_command, owners_only)]
 pub async fn db_ping(ctx: Context<'_>) -> Result<(), Error> {
     let result = sqlx::query("SELECT 1").execute(&ctx.data().pool).await;
 
